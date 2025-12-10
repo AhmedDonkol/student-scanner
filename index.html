@@ -196,22 +196,66 @@
     </div>
 
     <!-- Scanner controls -->
-    <div>
-      <button id="startBtn" class="primary">Start scanning</button>
-      <button id="stopBtn" class="secondary">Stop</button>
+    <div class="card">
+      <div class="section-title">Scanner controls</div>
+
+      <div class="field" style="margin-bottom: 8px;">
+        <label for="cameraSelect">Camera</label>
+        <select id="cameraSelect">
+          <option value="">Loading cameras...</option>
+        </select>
+      </div>
+
+      <div>
+        <button id="startBtn" class="primary">Start scanning</button>
+        <button id="stopBtn" class="secondary">Stop</button>
+      </div>
+
+      <video id="video" muted playsinline></video>
+      <p class="hint">
+        If the camera doesn't start, make sure the browser has camera permission enabled.
+      </p>
+
+      <div class="pill" id="lastScanPill" style="display:none;"></div>
     </div>
 
-    <video id="video" muted playsinline></video>
-    <p class="hint">
-      If the camera doesn’t start, make sure the browser has camera permission enabled.
-    </p>
-
-    <div class="pill" id="lastScanPill" style="display:none;"></div>
+    <!-- Manual entry -->
+    <div class="card">
+      <div class="section-title">Manual entry</div>
+      <div class="field-row">
+        <div class="field" style="flex: 2;">
+          <input id="manualInput" type="text" placeholder="Enter barcode manually..." />
+        </div>
+        <div style="display: flex; align-items: flex-end;">
+          <button id="manualAddBtn" class="primary">Add</button>
+        </div>
+      </div>
+      <div class="small-note">Use this if scanning doesn't work or for quick entry.</div>
+    </div>
 
     <div class="section-title">Saved scans (current session)</div>
+
+    <!-- Statistics -->
+    <div id="statsBar" class="card" style="display:none; font-size: 13px; padding: 8px 12px;">
+      <strong>Statistics:</strong> <span id="statsText"></span>
+    </div>
+
+    <!-- Search -->
+    <div style="margin-bottom: 8px;">
+      <input id="searchInput" type="text" placeholder="Search scans..." style="width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;" />
+    </div>
+
     <div>
-      <button id="downloadCsvBtn" class="secondary">Download CSV (this session)</button>
+      <button id="downloadCsvBtn" class="secondary">Download CSV</button>
+      <button id="downloadJsonBtn" class="secondary">Download JSON</button>
+      <button id="downloadAllBtn" class="secondary">Export all sessions</button>
+      <button id="clearSessionBtn" class="danger">Delete this session</button>
       <button id="clearBtn" class="danger">Clear all sessions</button>
+    </div>
+
+    <div id="undoBar" style="display:none; background: #333; color: white; padding: 8px 12px; border-radius: 6px; margin: 8px 0; font-size: 13px;">
+      <span id="undoText"></span>
+      <button id="undoBtn" style="background: #4CAF50; color: white; padding: 4px 12px; margin-left: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Undo</button>
     </div>
 
     <ul id="list"></ul>
@@ -232,10 +276,22 @@
     const startBtn = document.getElementById('startBtn');
     const stopBtn = document.getElementById('stopBtn');
     const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+    const downloadJsonBtn = document.getElementById('downloadJsonBtn');
+    const downloadAllBtn = document.getElementById('downloadAllBtn');
     const clearBtn = document.getElementById('clearBtn');
+    const clearSessionBtn = document.getElementById('clearSessionBtn');
     const lastScanPill = document.getElementById('lastScanPill');
     const list = document.getElementById('list');
     const emptyMsg = document.getElementById('emptyMsg');
+    const cameraSelect = document.getElementById('cameraSelect');
+    const manualInput = document.getElementById('manualInput');
+    const manualAddBtn = document.getElementById('manualAddBtn');
+    const searchInput = document.getElementById('searchInput');
+    const statsBar = document.getElementById('statsBar');
+    const statsText = document.getElementById('statsText');
+    const undoBar = document.getElementById('undoBar');
+    const undoText = document.getElementById('undoText');
+    const undoBtn = document.getElementById('undoBtn');
 
     const subjectInput = document.getElementById('subjectInput');
     const dateInput = document.getElementById('dateInput');
@@ -249,10 +305,16 @@
     let currentSessionId = null;
     let scanning = false;
     let currentDeviceId = null;
+    let availableCameras = [];
+    let undoStack = [];
+    let searchQuery = '';
 
     // Debounce: avoid repeated reading of same barcode every frame
     let lastScannedCode = null;
     let lastScannedAt = 0; // timestamp in ms
+
+    // Audio feedback
+    const beepSound = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBCiJ1vLVgjAGHm7A7+OZRA4RWqzp8qVcFhE7lunxvnMgBSB/zfLZ...');
 
     // ---------- Utilities ----------
     function todayISODate() {
@@ -265,6 +327,52 @@
 
     function makeSessionId(subject, date, sessionTime) {
       return `${subject}||${date}||${sessionTime}`;
+    }
+
+    function formatTime(isoString) {
+      const date = new Date(isoString);
+      const dateStr = date.toLocaleDateString();
+      const timeStr = date.toLocaleTimeString();
+      return `${dateStr} ${timeStr}`;
+    }
+
+    function playBeep() {
+      try {
+        beepSound.currentTime = 0;
+        beepSound.play().catch(e => console.log('Audio play failed:', e));
+      } catch (e) {
+        console.log('Audio error:', e);
+      }
+    }
+
+    async function loadCameras() {
+      try {
+        availableCameras = await codeReader.listVideoInputDevices();
+        cameraSelect.innerHTML = '';
+
+        if (availableCameras.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = 'No cameras found';
+          cameraSelect.appendChild(opt);
+          return;
+        }
+
+        availableCameras.forEach((device, index) => {
+          const opt = document.createElement('option');
+          opt.value = device.deviceId;
+          opt.textContent = device.label || `Camera ${index + 1}`;
+          cameraSelect.appendChild(opt);
+        });
+
+        if (availableCameras.length > 0) {
+          currentDeviceId = availableCameras[availableCameras.length - 1].deviceId;
+          cameraSelect.value = currentDeviceId;
+        }
+      } catch (e) {
+        console.error('Error loading cameras:', e);
+        cameraSelect.innerHTML = '<option value="">Error loading cameras</option>';
+      }
     }
 
     // ---------- Load & save ----------
@@ -416,7 +524,6 @@
 
       if (exists) {
         showDuplicateScan(code);
-        // No alert here, just show red pill
         return;
       }
 
@@ -429,6 +536,97 @@
       saveRecords();
       renderList();
       showLastScan(code);
+      playBeep();
+      updateStats();
+    }
+
+    function deleteRecord(sessionId, code) {
+      const records = recordsBySession[sessionId] || [];
+      const index = records.findIndex(r => r.code === code);
+      if (index === -1) return;
+
+      const deleted = records.splice(index, 1)[0];
+      recordsBySession[sessionId] = records;
+      saveRecords();
+
+      undoStack.push({
+        action: 'deleteRecord',
+        sessionId: sessionId,
+        record: deleted,
+        index: index
+      });
+      showUndo(`Deleted scan: ${code}`);
+      renderList();
+      updateStats();
+    }
+
+    function editRecord(sessionId, oldCode, newCode) {
+      const records = recordsBySession[sessionId] || [];
+      const record = records.find(r => r.code === oldCode);
+      if (!record) return;
+
+      const exists = records.some(r => r.code === newCode && r.code !== oldCode);
+      if (exists) {
+        alert('This code already exists in the session.');
+        return;
+      }
+
+      undoStack.push({
+        action: 'editRecord',
+        sessionId: sessionId,
+        oldCode: oldCode,
+        newCode: newCode
+      });
+
+      record.code = newCode;
+      saveRecords();
+      showUndo(`Edited: ${oldCode} → ${newCode}`);
+      renderList();
+    }
+
+    function deleteSession(sessionId) {
+      if (!confirm('Delete this session and all its scans?')) return;
+
+      const sessionIndex = sessions.findIndex(s => s.id === sessionId);
+      if (sessionIndex === -1) return;
+
+      const deletedSession = sessions.splice(sessionIndex, 1)[0];
+      const deletedRecords = recordsBySession[sessionId] || [];
+      delete recordsBySession[sessionId];
+
+      undoStack.push({
+        action: 'deleteSession',
+        session: deletedSession,
+        records: deletedRecords,
+        index: sessionIndex
+      });
+
+      if (currentSessionId === sessionId) {
+        currentSessionId = sessions.length > 0 ? sessions[0].id : null;
+      }
+
+      saveSessions();
+      saveRecords();
+      refreshSessionSelect();
+      updateSessionInputsFromCurrent();
+      updateCurrentSessionLabel();
+      renderList();
+      showUndo(`Deleted session: ${deletedSession.subject}`);
+    }
+
+    function updateStats() {
+      const records = getCurrentRecords();
+      if (records.length === 0) {
+        statsBar.style.display = 'none';
+        return;
+      }
+
+      statsBar.style.display = 'block';
+      const times = records.map(r => new Date(r.time).getTime());
+      const first = new Date(Math.min(...times));
+      const last = new Date(Math.max(...times));
+
+      statsText.textContent = `${records.length} scan${records.length !== 1 ? 's' : ''} | First: ${first.toLocaleTimeString()} | Last: ${last.toLocaleTimeString()}`;
     }
 
     function clearAllSessionsAndRecords() {
@@ -444,6 +642,46 @@
       updateCurrentSessionLabel();
       renderList();
       lastScanPill.style.display = 'none';
+      updateStats();
+    }
+
+    function showUndo(message) {
+      undoText.textContent = message;
+      undoBar.style.display = 'block';
+      setTimeout(() => {
+        undoBar.style.display = 'none';
+      }, 10000);
+    }
+
+    function performUndo() {
+      if (undoStack.length === 0) return;
+
+      const action = undoStack.pop();
+
+      if (action.action === 'deleteRecord') {
+        const records = recordsBySession[action.sessionId] || [];
+        records.splice(action.index, 0, action.record);
+        recordsBySession[action.sessionId] = records;
+        saveRecords();
+      } else if (action.action === 'editRecord') {
+        const records = recordsBySession[action.sessionId] || [];
+        const record = records.find(r => r.code === action.newCode);
+        if (record) {
+          record.code = action.oldCode;
+          saveRecords();
+        }
+      } else if (action.action === 'deleteSession') {
+        sessions.splice(action.index, 0, action.session);
+        recordsBySession[action.session.id] = action.records;
+        saveSessions();
+        saveRecords();
+        refreshSessionSelect();
+      }
+
+      undoBar.style.display = 'none';
+      renderList();
+      updateStats();
+      updateCurrentSessionLabel();
     }
 
     function renderList() {
@@ -453,16 +691,23 @@
       if (!session) {
         emptyMsg.textContent = 'No session selected.';
         emptyMsg.style.display = 'block';
+        statsBar.style.display = 'none';
         return;
       }
 
-      const records = getCurrentRecords().slice().sort((a, b) =>
+      let records = getCurrentRecords().slice().sort((a, b) =>
         a.code.localeCompare(b.code)
       );
 
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase();
+        records = records.filter(r => r.code.toLowerCase().includes(query));
+      }
+
       if (records.length === 0) {
-        emptyMsg.textContent = 'No scans for this session yet.';
+        emptyMsg.textContent = searchQuery ? 'No matching scans found.' : 'No scans for this session yet.';
         emptyMsg.style.display = 'block';
+        if (!searchQuery) statsBar.style.display = 'none';
         return;
       } else {
         emptyMsg.style.display = 'none';
@@ -470,6 +715,12 @@
 
       records.forEach((r, index) => {
         const li = document.createElement('li');
+        li.style.display = 'flex';
+        li.style.justifyContent = 'space-between';
+        li.style.alignItems = 'center';
+
+        const contentDiv = document.createElement('div');
+        contentDiv.style.flex = '1';
 
         const codeDiv = document.createElement('div');
         codeDiv.className = 'code';
@@ -477,10 +728,43 @@
 
         const timeDiv = document.createElement('div');
         timeDiv.className = 'time';
-        timeDiv.textContent = r.time;
+        timeDiv.textContent = formatTime(r.time);
 
-        li.appendChild(codeDiv);
-        li.appendChild(timeDiv);
+        contentDiv.appendChild(codeDiv);
+        contentDiv.appendChild(timeDiv);
+
+        const actionsDiv = document.createElement('div');
+        actionsDiv.style.display = 'flex';
+        actionsDiv.style.gap = '4px';
+
+        const editBtn = document.createElement('button');
+        editBtn.textContent = 'Edit';
+        editBtn.className = 'secondary';
+        editBtn.style.fontSize = '11px';
+        editBtn.style.padding = '4px 8px';
+        editBtn.style.margin = '0';
+        editBtn.onclick = () => {
+          const newCode = prompt('Edit barcode:', r.code);
+          if (newCode && newCode.trim() && newCode !== r.code) {
+            editRecord(session.id, r.code, newCode.trim());
+          }
+        };
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.className = 'danger';
+        deleteBtn.style.fontSize = '11px';
+        deleteBtn.style.padding = '4px 8px';
+        deleteBtn.style.margin = '0';
+        deleteBtn.onclick = () => {
+          deleteRecord(session.id, r.code);
+        };
+
+        actionsDiv.appendChild(editBtn);
+        actionsDiv.appendChild(deleteBtn);
+
+        li.appendChild(contentDiv);
+        li.appendChild(actionsDiv);
         list.appendChild(li);
       });
     }
@@ -510,15 +794,15 @@
       scanning = true;
 
       try {
-        const devices = await codeReader.listVideoInputDevices();
-        if (!devices || devices.length === 0) {
-          alert('No camera found');
-          scanning = false;
-          return;
+        if (!currentDeviceId) {
+          const devices = await codeReader.listVideoInputDevices();
+          if (!devices || devices.length === 0) {
+            alert('No camera found');
+            scanning = false;
+            return;
+          }
+          currentDeviceId = devices[devices.length - 1].deviceId;
         }
-
-        // Prefer back camera
-        currentDeviceId = devices[devices.length - 1].deviceId;
 
         await codeReader.decodeFromVideoDevice(currentDeviceId, video, (result, err) => {
           if (result) {
@@ -537,7 +821,6 @@
               addRecordToCurrentSession(text);
             }
           }
-          // Ignore errors while decoding frames
         });
       } catch (e) {
         console.error(e);
@@ -555,7 +838,7 @@
       scanning = false;
     }
 
-    // ---------- CSV export (current session only) ----------
+    // ---------- Export functions ----------
     function downloadCSV() {
       const session = getCurrentSessionMeta();
       if (!session) {
@@ -593,13 +876,105 @@
       URL.revokeObjectURL(url);
     }
 
+    function downloadJSON() {
+      const session = getCurrentSessionMeta();
+      if (!session) {
+        alert('Please select a session first.');
+        return;
+      }
+
+      const records = getCurrentRecords();
+      if (records.length === 0) {
+        alert('No records to export for this session.');
+        return;
+      }
+
+      const data = {
+        session: session,
+        records: records,
+        exportDate: new Date().toISOString()
+      };
+
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'students_' + (session.date || 'session') + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function downloadAllSessions() {
+      if (sessions.length === 0) {
+        alert('No sessions to export.');
+        return;
+      }
+
+      const data = {
+        sessions: sessions,
+        recordsBySession: recordsBySession,
+        exportDate: new Date().toISOString()
+      };
+
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'all_sessions_' + todayISODate() + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
     // ---------- Event wiring ----------
     startBtn.addEventListener('click', startScan);
     stopBtn.addEventListener('click', stopScan);
     downloadCsvBtn.addEventListener('click', downloadCSV);
+    downloadJsonBtn.addEventListener('click', downloadJSON);
+    downloadAllBtn.addEventListener('click', downloadAllSessions);
     clearBtn.addEventListener('click', clearAllSessionsAndRecords);
+    clearSessionBtn.addEventListener('click', () => {
+      if (currentSessionId) {
+        deleteSession(currentSessionId);
+      }
+    });
     saveSessionBtn.addEventListener('click', createOrUpdateSession);
     sessionSelect.addEventListener('change', handleSessionSelectChange);
+    cameraSelect.addEventListener('change', (e) => {
+      currentDeviceId = e.target.value;
+      if (scanning) {
+        stopScan();
+        setTimeout(() => startScan(), 100);
+      }
+    });
+    manualAddBtn.addEventListener('click', () => {
+      const code = manualInput.value.trim();
+      if (code) {
+        addRecordToCurrentSession(code);
+        manualInput.value = '';
+      }
+    });
+    manualInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        const code = manualInput.value.trim();
+        if (code) {
+          addRecordToCurrentSession(code);
+          manualInput.value = '';
+        }
+      }
+    });
+    searchInput.addEventListener('input', (e) => {
+      searchQuery = e.target.value;
+      renderList();
+    });
+    undoBtn.addEventListener('click', performUndo);
 
     // ---------- Init ----------
     function init() {
@@ -609,6 +984,8 @@
       updateSessionInputsFromCurrent();
       updateCurrentSessionLabel();
       renderList();
+      updateStats();
+      loadCameras();
     }
 
     init();
